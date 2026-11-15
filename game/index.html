@@ -72,7 +72,7 @@
 
   #minimap { position: fixed; top: 18px; left: 24px; width: 176px; height: 132px; border: 1px solid var(--hairline); border-radius: var(--radius-panel); background: rgba(20,24,28,.78); }
   #minimap-label { position: fixed; top: 154px; left: 24px; font-family: var(--font-readout); font-size: 10px; letter-spacing: .14em; color: var(--muted); }
-  #armor { position: fixed; top: 48px; right: 24px; font-family: var(--font-readout); font-size: 11px; letter-spacing: .12em; color: var(--accent); border: 1px solid var(--hairline); border-radius: var(--radius-panel); padding: 4px 8px; background: rgba(20,24,28,.78); }
+  #armor { position: fixed; top: auto; right: auto; bottom: 72px; left: 32px; font-family: var(--font-readout); font-size: 11px; letter-spacing: .12em; color: var(--accent); border: 1px solid var(--hairline); border-radius: var(--radius-panel); padding: 4px 8px; background: rgba(20,24,28,.78); }
 
   #scope { position: fixed; inset: 0; pointer-events: none; }
   #scope[hidden] { display: none; }
@@ -219,7 +219,7 @@
 
 <div id="buy-menu" hidden>
   <h2>Buy phase <span id="buy-money">$800</span></h2>
-  <p>Keys 2–4, G, Q, E or click. The round goes live when the timer ends.</p>
+  <p>Keys 2–4, 6–7, G, Q, E or click. The round goes live when the timer ends.</p>
   <button class="buy-item" data-buy="rifle"><span class="key">2</span><span class="buy-name">VK-9 Carbine</span><span class="buy-desc">Auto rifle. The workhorse.</span><span class="buy-price">$2700</span></button>
   <button class="buy-item" data-buy="shotgun"><span class="key">3</span><span class="buy-name">Scatter-12</span><span class="buy-desc">8 pellets up close.</span><span class="buy-price">$1050</span></button>
   <button class="buy-item" data-buy="dmr"><span class="key">4</span><span class="buy-name">Longbow DMR</span><span class="buy-desc">One shot, long sightlines.</span><span class="buy-price">$4750</span></button>

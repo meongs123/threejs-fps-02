@@ -190,6 +190,9 @@ function freezeShot() {
 function stageShot() {
   game.newMatch();
   hud.hideOverlay();
+  // Captures freeze in the same tick as hud.banner(): kill the 200 ms
+  // opacity fade so the banner is solid the instant it is shown.
+  document.getElementById('banner').style.transition = 'none';
   if (shot === 'buy') {
     hud.showBuy(true, game.money, weapons.owned, { rifle: 2700, shotgun: 1050, dmr: 4750, lightvest: 650, heavyvest: 1000, grenade: 300, smoke: 250, flash: 200 });
     document.getElementById('banner').classList.remove('on');
@@ -198,6 +201,13 @@ function stageShot() {
     body.pitch = 0;
     freezeShot();
     return;
+  }
+  if (shot === 'round-win') {
+    // Showcase loadout through the real shop path (buy phase only):
+    // VK-9 Carbine + Heavy Vest + Helmet for the round-win frame.
+    game.debugMoney(5000);
+    game.buyItem('rifle');
+    game.buyItem('heavyvest');
   }
   skipBuy();
   if (shot === 'firefight') {
@@ -254,10 +264,18 @@ function stageShot() {
     game.debugArm('frag');
     game.throwGrenade(camera);
     for (let i = 0; i < 115; i += 1) game.step(FIXED_STEP, input.state, camera);
-    hud.banner('ROUND WON', 'Jackal squad eliminated — Site A held.');
+    hud.setSpike('');
     hud.setScore(3, 1, 4);
     hud.setHealth(61);
+    hud.killfeed('<b class="vanguard">HAVOC</b> \u25b8 <b class="jackal">VIPER</b>');
     freezeShot();
+    // Show the banner AFTER the (slow, software-rendered) freeze renders:
+    // its 2.6 s auto-hide timer must start at __shotReady, not before it,
+    // or the capture fires after it already hid.
+    hud.banner('ROUND WON', 'Jackal squad eliminated — Site A held.');
+    // Capture hook: re-show the banner (fresh 2.6 s timer) right before the
+    // screenshot, so a slow compositor still catches it solid.
+    window.__shotBanner = () => hud.banner('ROUND WON', 'Jackal squad eliminated — Site A held.');
   }
 }
 
