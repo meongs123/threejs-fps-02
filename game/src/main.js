@@ -1,7 +1,7 @@
 // EMBERLINE — Kestrel Yard. Boot and the one loop: a fixed 60 Hz simulation feeding
-// a render at the display's rate. ?shot=start|play|buy|end with &seed=N stages a
-// deterministic frame for a capture, renders it twice, freezes it and sets
-// window.__shotReady.
+// a render at the display's rate. ?shot=firefight|site-plant|buy|round-win with
+// &seed=N stages a deterministic frame for a capture, renders it twice, freezes
+// it and sets window.__shotReady.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { mulberry32 } from './rng.js';
@@ -112,6 +112,9 @@ function step(dt) {
       if (edgePressed('Digit4')) weapons.equip('dmr');
     }
     if (edgePressed('KeyG')) game.throwGrenade(camera);
+    if (edgePressed('KeyQ')) game.throwUtility('smoke', camera);
+    if (edgePressed('KeyE')) game.throwUtility('flash', camera);
+    if (edgePressed('KeyX')) game.dropSpike();
   }
   prevKeys = new Set(input.state.keys);
   game.step(dt, input.state, camera);
@@ -179,23 +182,8 @@ function freezeShot() {
 function stageShot() {
   game.newMatch();
   hud.hideOverlay();
-  if (shot === 'start') {
-    // Overlook from behind the Vanguard spawn: mid warehouse, both sites, bots
-    // mid-lane in the open.
-    for (let i = 0; i < 240; i += 1) bots.step(FIXED_STEP, {
-      playerAlive: true, playerBody: body, playerSpeed: 0, assignedSite: SITES.A,
-      spikeState: 'carried', spikePos: SITES.A.center, onPlant() {}, onDefuse() {},
-      onBotFire() {},
-    });
-    body.position.set(-3, 0, 15.5);
-    body.yaw = 0.12;
-    body.pitch = 0.08;
-    hud.showOverlay('start');
-    freezeShot();
-    return;
-  }
   if (shot === 'buy') {
-    hud.showBuy(true, game.money, weapons.owned, { rifle: 2700, shotgun: 1050, dmr: 4750, grenade: 300 });
+    hud.showBuy(true, game.money, weapons.owned, { rifle: 2700, shotgun: 1050, dmr: 4750, grenade: 300, smoke: 250, flash: 200 });
     document.getElementById('banner').classList.remove('on');
     body.position.set(0, 0, 13);
     body.yaw = 0;
@@ -204,33 +192,63 @@ function stageShot() {
     return;
   }
   skipBuy();
-  if (shot === 'play') {
-    // Mid-lane firefight through the warehouse door: aim at the nearest Jackal,
-    // fire once, freeze on the tracer and the hit marker.
+  if (shot === 'firefight') {
+    // Mid-lane firefight: smoke blooming at the left chokepoint, tracer and
+    // hitmarker on a Jackal in the warehouse door, killfeed and radio in HUD.
     const enemy = bots.bots.find((b) => b.team === 'jackal' && b.alive);
+    const enemy2 = bots.bots.find((b) => b.team === 'jackal' && b.alive && b !== enemy);
     body.position.set(0.3, 0, 10);
+    aimAt(new THREE.Vector3(-6, 1.2, -2));
+    game.debugArm('smoke');
+    game.throwUtility('smoke', camera);
+    for (let i = 0; i < 90; i += 1) game.step(FIXED_STEP, input.state, camera);
     if (enemy) {
       enemy.body.position.set(0.5, 0, -3);
       enemy.body.yaw = Math.PI;
-      aimAt(new THREE.Vector3(enemy.body.position.x, 1.3, enemy.body.position.z));
     }
-    for (let i = 0; i < 30; i += 1) game.step(FIXED_STEP, input.state, camera);
+    if (enemy2) {
+      enemy2.body.position.set(-1.5, 0, 3);
+      enemy2.body.yaw = Math.PI * 0.9;
+    }
+    for (let i = 0; i < 10; i += 1) game.step(FIXED_STEP, input.state, camera);
     if (enemy) aimAt(new THREE.Vector3(enemy.body.position.x, 1.3, enemy.body.position.z));
     game.firePlayer(camera);
     hud.killfeed('<b class="vanguard">HAVOC</b> ▸ <b class="jackal">VIPER</b>');
+    hud.radio('<b class="vanguard">FALCON</b> [RADIO]: Smoke out — pushing Crane Yard!');
     hud.setHealth(74);
     hud.setScore(2, 1, 3);
     document.getElementById('banner').classList.remove('on');
     freezeShot();
     return;
   }
-  if (shot === 'end') {
-    hud.showOverlay('round', 'Vanguard takes Round 3 — the spike detonated at Site A. Score 3–1.');
-    hud.setScore(3, 1, 3);
+  if (shot === 'site-plant') {
+    // Site A, spike planted: the blinking 3D prop on the amber pad, squad
+    // holding cover, SPIKE PLANTED in the HUD.
+    game.debugPlant();
+    const guard1 = bots.bots.find((b) => b.team === 'vanguard' && b.alive);
+    const guard2 = bots.bots.find((b) => b.team === 'vanguard' && b.alive && b !== guard1);
+    if (guard1) { guard1.body.position.set(-19.5, 0, -2.5); guard1.body.yaw = Math.PI * 0.75; }
+    if (guard2) { guard2.body.position.set(-15.5, 0, -5.5); guard2.body.yaw = -Math.PI * 0.25; }
+    body.position.set(-17, 0, -1.5);
+    aimAt(new THREE.Vector3(SITES.A.center.x, 0.3, SITES.A.center.z));
+    hud.radio('<b class="vanguard">HAVOC</b> [RADIO]: Covering Spike at A!');
+    for (let i = 0; i < 30; i += 1) game.step(FIXED_STEP, input.state, camera);
+    hud.setHealth(82);
+    hud.setScore(2, 1, 3);
+    freezeShot();
+    return;
+  }
+  if (shot === 'round-win') {
+    // Round won at Site A: a frag bursting mid-frame, compact ROUND WON
+    // banner, the yard still visible behind it.
+    body.position.set(-13, 0, -2);
+    aimAt(new THREE.Vector3(0, 1.4, -6));
+    game.debugArm('frag');
+    game.throwGrenade(camera);
+    for (let i = 0; i < 115; i += 1) game.step(FIXED_STEP, input.state, camera);
+    hud.banner('ROUND WON', 'Jackal squad eliminated — Site A held.');
+    hud.setScore(3, 1, 4);
     hud.setHealth(61);
-    body.position.set(2, 0, -13);
-    body.yaw = Math.PI - 0.15;
-    body.pitch = 0.05;
     freezeShot();
   }
 }
@@ -260,12 +278,14 @@ window.__game = {
     const b = bots.bots[i];
     if (!b) return null;
     return {
-      name: b.name, team: b.team, state: b.state,
+      name: b.name, team: b.team, role: b.role, state: b.state,
       x: +b.body.position.x.toFixed(1), z: +b.body.position.z.toFixed(1),
       vx: +b.body.velocity.x.toFixed(2), vz: +b.body.velocity.z.toFixed(2),
       targetKey: b.targetKey, reaction: +b.reaction.toFixed(2),
       burstLeft: b.burstLeft, path: b.path, pathIndex: b.pathIndex,
-      lastSeen: b.lastSeen ? { x: +b.lastSeen.x.toFixed(1), z: +b.lastSeen.z.toFixed(1) } : null,
+      hasTarget: !!b.target, blindUntil: +b.blindUntil.toFixed(2),
+      hearUntil: +b.hearUntil.toFixed(2), smokeLeft: b.smokeLeft, fragLeft: b.fragLeft,
+      lastSeen: b.hasLastSeen ? { x: +b.lastSeen.x.toFixed(1), z: +b.lastSeen.z.toFixed(1) } : null,
     };
   },
   botsPos() {
@@ -288,6 +308,20 @@ window.__game = {
     game.throwGrenade(camera);
     return 'thrown';
   },
+  throwSmoke() { game.debugArm('smoke'); game.throwUtility('smoke', camera); return game.smokes; },
+  throwFlash() { game.debugArm('flash'); game.throwUtility('flash', camera); return game.flashes; },
+  utility() { return { frag: game.grenades, smoke: game.smokes, flash: game.flashes, throws: game.throws, smokeActive: game.smokeCount }; },
+  ammo() { return { mag: weapons.ammo.mag, reserve: weapons.ammo.reserve, weapon: weapons.current, reloading: weapons.reloading }; },
+  aim(x, y, z) { aimAt(new THREE.Vector3(x, y, z)); return 'ok'; },
+  spikeCarrier() { return { state: game.spike.state, carrier: game.spike.carrier, carrierBot: game.spike.carrierBot ? game.spike.carrierBot.name : null, idleTimer: +game.idleTimer.toFixed(1), x: +game.spike.pos.x.toFixed(1), z: +game.spike.pos.z.toFixed(1) }; },
+  flashLevel() { return +game.flashLevel.toFixed(2); },
+  teleport(x, z) { body.position.set(x, 0, z); return 'ok'; },
+  stepN(n) { for (let i = 0; i < n; i += 1) game.step(FIXED_STEP, input.state, camera); return game.phase; },
+  // Full frame step (main.js step): player movement, edge-triggered utility
+  // throws (G/Q/E/R/X), firing, then game.step. Use this in play-tests when
+  // a check needs the real input path instead of game.step alone.
+  stepMain(n) { for (let i = 0; i < n; i += 1) step(FIXED_STEP); return game.phase; },
+  debugPlant() { game.debugPlant(); return game.spike.state; },
   start() { if (game.phase === 'lobby') { game.newMatch(); started = true; } },
   skipBuy,
 };

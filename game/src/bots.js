@@ -2,7 +2,11 @@
 // small state machine: advance along its lane, hold a position, engage what it can
 // see, and work the objective — Vanguard plants the spike, Jackals defuse it.
 // Bots react after a short delay, fire in bursts with distance-based accuracy, and
-// turn toward gunfire they hear. One module owns all of it; game.js owns the match.
+// turn toward gunfire they hear (hearEvent, ~36 m). Smoke genuinely blocks their
+// line of sight; a flash blinds them for a few seconds. One module owns all of it;
+// game.js owns the match. The hot loop allocates nothing per frame: sensing reuses
+// scratch vectors and a candidate pool, and each bot owns one preallocated
+// lastSeen vector.
 import * as THREE from 'three';
 import { createMover, makeBody } from './physics.js';
 import { range, pick } from './rng.js';
@@ -12,10 +16,20 @@ const BOT_NAMES = {
   jackal: ['VIPER', 'GHOST', 'MULE', 'DUSK', 'RAZOR'],
 };
 const BOT_GUNS = ['rifle', 'rifle', 'rifle', 'shotgun', 'dmr'];
+const BOT_ROLES = {
+  vanguard: ['flank', 'mid', 'execute', 'flank'],
+  jackal: ['siteA', 'siteB', 'mid', 'rotate', 'siteA'],
+};
 const REACTION = [0.35, 0.65];
 const BURST = [3, 5];
 const WALK_SPEED = 3.7;
 const EYE = 1.55;
+const SIGHT_RANGE = 26;
+const HEAR_RANGE = 36;
+const FLANK_NODES = [27, 28];
+const MID_NODES = [9, 10, 11];
+const SITE_A_NODES = [16, 17, 18];
+const SITE_B_NODES = [19, 20, 21];
 
 function buildFigure(scene, team) {
   const group = new THREE.Group();
@@ -53,8 +67,17 @@ export function createBots(scene, world, random) {
   raycaster.far = 60;
   const flashColor = new THREE.Color(0xff5555);
   const noFlash = new THREE.Color(0x000000);
+  // Scratch vectors, allocated once and reused by the per-frame sense code.
   const eyeDir = new THREE.Vector3();
   const toTarget = new THREE.Vector3();
+  const eyeScratch = new THREE.Vector3();
+  const smokeTmp = new THREE.Vector3();
+  const closestTmp = new THREE.Vector3();
+  // Candidate pool: one reusable object per possible enemy, no allocation.
+  const candPool = [];
+  for (let i = 0; i < 10; i += 1) {
+    candPool.push({ kind: '', bot: null, pos: new THREE.Vector3(), moving: 0, crouching: false });
+  }
   const bots = [];
   const hitMeshes = [];
   let time = 0;
@@ -65,6 +88,7 @@ export function createBots(scene, world, random) {
       team,
       index,
       name: BOT_NAMES[team][index % BOT_NAMES[team].length],
+      role: BOT_ROLES[team][index % BOT_ROLES[team].length],
       figure,
       body: makeBody(spawn[0], spawn[1], team === 'vanguard' ? 0 : Math.PI),
       health: 100,
@@ -80,7 +104,8 @@ export function createBots(scene, world, random) {
       aimError: 0,
       strafeDir: 1,
       strafeUntil: 0,
-      lastSeen: null,
+      lastSeen: new THREE.Vector3(),
+      hasLastSeen: false,
       target: null,
       targetKey: null,
       plantProgress: 0,
@@ -90,6 +115,12 @@ export function createBots(scene, world, random) {
       damageFlash: 0,
       lastPos: null,
       stuckTimer: 0,
+      hearVec: new THREE.Vector3(),
+      hearUntil: 0,
+      hearChase: false,
+      blindUntil: 0,
+      smokeLeft: team === 'vanguard' ? 1 : 0,
+      fragLeft: 1,
     };
     figure.torso.userData = { bot, part: 'torso' };
     figure.head.userData = { bot, part: 'head' };
@@ -98,11 +129,26 @@ export function createBots(scene, world, random) {
     return bot;
   }
 
-  function hasLineOfSight(from, to) {
+  // A smoke puff blocks sight when the eye-to-target segment passes through
+  // one of its spheres (or starts inside one).
+  function smokeBlocks(from, dir, dist, smokes) {
+    if (!smokes) return false;
+    for (const puff of smokes) {
+      if (!puff.active) continue;
+      smokeTmp.copy(puff.center).sub(from);
+      const t = Math.max(0, Math.min(dist, smokeTmp.dot(dir)));
+      closestTmp.copy(from).addScaledVector(dir, t);
+      if (closestTmp.distanceTo(puff.center) < puff.radius) return true;
+    }
+    return false;
+  }
+
+  function hasLineOfSight(from, to, smokes) {
     toTarget.copy(to).sub(from);
     const dist = toTarget.length();
     if (dist < 0.01) return true;
     eyeDir.copy(toTarget).normalize();
+    if (smokeBlocks(from, eyeDir, dist, smokes)) return false;
     raycaster.set(from, eyeDir);
     raycaster.far = dist;
     const hit = raycaster.intersectObjects(world.shootables, false)[0];
@@ -110,33 +156,36 @@ export function createBots(scene, world, random) {
   }
 
   function nearestVisibleEnemy(bot, ctx) {
-    const eye = new THREE.Vector3(bot.body.position.x, EYE, bot.body.position.z);
+    eyeScratch.set(bot.body.position.x, EYE, bot.body.position.z);
     let best = null;
-    let bestD = 26;
-    const candidates = [];
+    let bestD = SIGHT_RANGE;
+    let candCount = 0;
+    const smokes = ctx.smokeSpheres ? ctx.smokeSpheres() : null;
     // The player is only an enemy to Jackals; Vanguard bots never shoot them.
     if (ctx.playerAlive && bot.team === 'jackal') {
-      candidates.push({
-        kind: 'player',
-        pos: new THREE.Vector3(ctx.playerBody.position.x, ctx.playerBody.position.y + ctx.playerBody.eye, ctx.playerBody.position.z),
-        moving: ctx.playerSpeed,
-        crouching: ctx.playerBody.crouching,
-      });
+      const c = candPool[candCount];
+      candCount += 1;
+      c.kind = 'player';
+      c.bot = null;
+      c.pos.set(ctx.playerBody.position.x, ctx.playerBody.position.y + ctx.playerBody.eye, ctx.playerBody.position.z);
+      c.moving = ctx.playerSpeed;
+      c.crouching = ctx.playerBody.crouching;
     }
     for (const other of bots) {
       if (!other.alive || other.team === bot.team) continue;
-      candidates.push({
-        kind: 'bot',
-        bot: other,
-        pos: new THREE.Vector3(other.body.position.x, EYE, other.body.position.z),
-        moving: Math.hypot(other.body.velocity.x, other.body.velocity.z),
-        crouching: false,
-      });
+      const c = candPool[candCount];
+      candCount += 1;
+      c.kind = 'bot';
+      c.bot = other;
+      c.pos.set(other.body.position.x, EYE, other.body.position.z);
+      c.moving = Math.hypot(other.body.velocity.x, other.body.velocity.z);
+      c.crouching = false;
     }
-    for (const cand of candidates) {
-      const d = eye.distanceTo(cand.pos);
+    for (let i = 0; i < candCount; i += 1) {
+      const cand = candPool[i];
+      const d = eyeScratch.distanceTo(cand.pos);
       if (d > bestD) continue;
-      if (!hasLineOfSight(eye, cand.pos)) continue;
+      if (!hasLineOfSight(eyeScratch, cand.pos, smokes)) continue;
       best = cand;
       bestD = d;
     }
@@ -149,13 +198,36 @@ export function createBots(scene, world, random) {
     bot.pathIndex = 0;
   }
 
+  function laneName(x, z) {
+    if (z < -5) return x < 0 ? 'Crane Yard' : 'Stacks';
+    if (Math.abs(x) < 8) return 'Mid';
+    return x < 0 ? 'West flank' : 'East flank';
+  }
+
+  function roleDest(bot, ctx) {
+    switch (bot.role) {
+      case 'flank': return bot.body.position.x < 0 ? FLANK_NODES[0] : FLANK_NODES[1];
+      case 'mid': return pick(random, MID_NODES);
+      case 'execute': return world.nearestNode(ctx.assignedSite.center.x, ctx.assignedSite.center.z);
+      case 'siteA': return pick(random, SITE_A_NODES);
+      case 'siteB': return pick(random, SITE_B_NODES);
+      case 'rotate': {
+        const other = ctx.assignedSite.name === 'A' ? SITE_B_NODES : SITE_A_NODES;
+        return pick(random, other);
+      }
+      default: return world.nearestNode(ctx.assignedSite.center.x, ctx.assignedSite.center.z);
+    }
+  }
+
   function stepBot(bot, dt, ctx) {
     const body = bot.body;
     if (!bot.alive) return;
     bot.damageFlash = Math.max(0, bot.damageFlash - dt);
+    const blinded = time < bot.blindUntil;
 
-    // Sense: nearest visible enemy, within 42 m and line of sight.
-    const seen = nearestVisibleEnemy(bot, ctx);
+    // Sense: nearest visible enemy, within SIGHT_RANGE and line of sight.
+    // A blinded bot sees nothing and wanders instead of firing.
+    const seen = blinded ? null : nearestVisibleEnemy(bot, ctx);
     if (seen) {
       const key = seen.target.kind === 'player' ? 'player' : `${seen.target.bot.team}:${seen.target.bot.index}`;
       if (bot.targetKey !== key) {
@@ -163,7 +235,8 @@ export function createBots(scene, world, random) {
         bot.targetKey = key;
       }
       bot.target = seen.target;
-      bot.lastSeen = seen.target.pos.clone();
+      bot.lastSeen.copy(seen.target.pos);
+      bot.hasLastSeen = true;
       bot.state = 'engage';
     } else if (bot.state === 'engage') {
       bot.target = null;
@@ -171,8 +244,18 @@ export function createBots(scene, world, random) {
       bot.state = time < bot.holdUntil ? 'hold' : 'advance';
     }
 
-    // Objective work, only when nothing is in the sights.
-    if (bot.state !== 'engage') {
+    // Hearing: a recent gunshot pulls a holding or advancing bot toward it.
+    if (!blinded && bot.state !== 'engage' && bot.hearChase && time < bot.hearUntil) {
+      bot.hearChase = false;
+      setPath(bot, world.nearestNode(bot.hearVec.x, bot.hearVec.z));
+      bot.state = 'advance';
+      if (ctx.onRadio && random() < 0.5) {
+        ctx.onRadio(`<b class="${bot.team}">${bot.name}</b> [RADIO]: Contact ${laneName(bot.hearVec.x, bot.hearVec.z)}!`);
+      }
+    }
+
+    // Objective work, only when nothing is in the sights and not blinded.
+    if (!blinded && bot.state !== 'engage') {
       if (bot.team === 'vanguard' && bot.isCarrier && ctx.spikeState === 'carried') {
         const site = ctx.assignedSite;
         const d = Math.hypot(body.position.x - site.center.x, body.position.z - site.center.z);
@@ -187,7 +270,19 @@ export function createBots(scene, world, random) {
           setPath(bot, world.nearestNode(site.center.x, site.center.z));
           bot.state = 'advance';
         }
+      } else if (bot.team === 'vanguard' && ctx.spikeState === 'dropped') {
+        // Pick the dropped spike up and carry it to the site.
+        const d = Math.hypot(body.position.x - ctx.spikePos.x, body.position.z - ctx.spikePos.z);
+        if (d < 2) {
+          ctx.onPickup(bot);
+        } else if (bot.state !== 'advance') {
+          setPath(bot, world.nearestNode(ctx.spikePos.x, ctx.spikePos.z));
+          bot.state = 'advance';
+        } else if (bot.pathIndex >= bot.path.length) {
+          setPath(bot, world.nearestNode(ctx.spikePos.x, ctx.spikePos.z));
+        }
       } else if (bot.team === 'jackal' && ctx.spikeState === 'planted') {
+        // Retake: every Jackal rotates onto the planted site at once.
         const d = Math.hypot(body.position.x - ctx.spikePos.x, body.position.z - ctx.spikePos.z);
         if (d < 2.6) {
           bot.state = 'defuse';
@@ -207,25 +302,45 @@ export function createBots(scene, world, random) {
       } else if (bot.state === 'hold' && time >= bot.holdUntil) {
         // Late in the round the attack pushes hard for the site instead of
         // holding: a round that nobody wins on the clock is a round wasted.
-        if (bot.team === 'vanguard' && ctx.timeLeft !== undefined && ctx.timeLeft < 30) {
+        if (bot.team === 'vanguard' && ctx.timeLeft !== undefined && ctx.timeLeft < 35) {
           setPath(bot, world.nearestNode(ctx.assignedSite.center.x, ctx.assignedSite.center.z));
           bot.state = 'advance';
           return;
         }
-        const dest = bot.team === 'vanguard'
-          ? world.nearestNode(ctx.assignedSite.center.x + range(random, -4, 4), ctx.assignedSite.center.z + range(random, -4, 4))
-          : pick(random, [16, 17, 18, 19, 20, 21]);
-        setPath(bot, dest);
+        setPath(bot, roleDest(bot, ctx));
         bot.state = 'advance';
       }
     }
 
-    // Move: follow the path, or strafe while engaging.
+    // Utility throws on the execute: smoke the site, or frag a held angle.
+    if (!blinded && bot.state === 'advance' && ctx.onBotThrow) {
+      if (bot.team === 'vanguard') {
+        const dSite = Math.hypot(body.position.x - ctx.assignedSite.center.x, body.position.z - ctx.assignedSite.center.z);
+        if (dSite < 14 && random() < dt * 0.05) {
+          if (bot.smokeLeft > 0 && random() < 0.6) { bot.smokeLeft -= 1; ctx.onBotThrow(bot, 'smoke'); }
+          else if (bot.fragLeft > 0) { bot.fragLeft -= 1; ctx.onBotThrow(bot, 'frag'); }
+        }
+      } else if (ctx.spikeState === 'planted' && bot.fragLeft > 0 && random() < dt * 0.02) {
+        bot.fragLeft -= 1;
+        ctx.onBotThrow(bot, 'frag');
+      }
+    }
+
+    // Move: follow the path, strafe while engaging, wander while blinded.
     let moveX = 0;
     let moveZ = 0;
     let speed = WALK_SPEED;
     let faceYaw = body.yaw;
-    if (bot.state === 'engage' && bot.lastSeen) {
+    if (blinded) {
+      if (time > bot.strafeUntil) {
+        bot.strafeDir = random() < 0.5 ? -1 : 1;
+        bot.strafeUntil = time + range(random, 0.4, 0.9);
+      }
+      faceYaw += bot.strafeDir * dt * 1.5;
+      moveX = Math.sin(faceYaw) * 0.4;
+      moveZ = -Math.cos(faceYaw) * 0.4;
+      speed = WALK_SPEED * 0.4;
+    } else if (bot.state === 'engage' && bot.hasLastSeen) {
       faceYaw = Math.atan2(-(bot.lastSeen.x - body.position.x), -(bot.lastSeen.z - body.position.z));
       if (time > bot.strafeUntil) {
         bot.strafeDir = random() < 0.5 ? -1 : 1;
@@ -274,7 +389,7 @@ export function createBots(scene, world, random) {
     }
 
     // Fire in bursts once the reaction delay has run out.
-    if (bot.state === 'engage' && bot.target) {
+    if (!blinded && bot.state === 'engage' && bot.target) {
       if (bot.reaction > 0) bot.reaction -= dt;
       else {
         bot.burstGap -= dt;
@@ -319,6 +434,18 @@ export function createBots(scene, world, random) {
   return {
     bots,
     hitMeshes,
+    now() { return time; },
+    // Gunfire at a point: enemy bots within HEAR_RANGE turn toward it.
+    hearEvent(pos, team) {
+      for (const bot of bots) {
+        if (!bot.alive || bot.team === team) continue;
+        const d = Math.hypot(bot.body.position.x - pos.x, bot.body.position.z - pos.z);
+        if (d > HEAR_RANGE) continue;
+        bot.hearVec.set(pos.x, 0, pos.z);
+        bot.hearUntil = time + 3;
+        bot.hearChase = true;
+      }
+    },
     spawnRound(teamSites) {
       for (const bot of bots) scene.remove(bot.figure.group);
       bots.length = 0;
@@ -328,17 +455,24 @@ export function createBots(scene, world, random) {
       // 5v5 including the player: four Vanguard bots beside the player, five Jackals.
       for (let i = 0; i < 4; i += 1) makeBot('vanguard', i, vanguardSpawns[i + 1]);
       for (let i = 0; i < 5; i += 1) makeBot('jackal', i, jackalSpawns[i]);
-      // Vanguard opens toward its assigned site; Jackals split across both sites.
+      // Roles drive the opening lane: flanks take the sides, mid holds the
+      // warehouse doors, the execute bot runs straight at the site.
       for (const bot of bots) {
         if (bot.team === 'vanguard') {
           const site = teamSites.vanguard;
-          setPath(bot, world.nearestNode(site.center.x + (bot.index - 2) * 3, site.center.z + 2));
+          if (bot.role === 'flank') setPath(bot, bot.body.position.x < 0 ? FLANK_NODES[0] : FLANK_NODES[1]);
+          else if (bot.role === 'mid') setPath(bot, pick(random, MID_NODES));
+          else setPath(bot, world.nearestNode(site.center.x + (bot.index - 2) * 3, site.center.z + 2));
         } else {
-          const site = bot.index % 2 === 0 ? teamSites.A : teamSites.B;
+          const site = bot.role === 'siteA' ? teamSites.A : bot.role === 'siteB' ? teamSites.B
+            : bot.role === 'rotate' ? (teamSites.vanguard.name === 'A' ? teamSites.B : teamSites.A)
+            : teamSites.vanguard;
           setPath(bot, world.nearestNode(site.center.x + (bot.index - 2) * 2, site.center.z + 2));
         }
         bot.state = 'advance';
         bot.isCarrier = false;
+        bot.smokeLeft = bot.team === 'vanguard' ? 1 : 0;
+        bot.fragLeft = 1;
       }
     },
     step(dt, ctx) {

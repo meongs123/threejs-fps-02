@@ -132,9 +132,9 @@ export function createWorld(scene) {
   scene.add(skyline);
 
   // Dusk light: a low amber sun, cool hemisphere fill, one lamp per site.
-  const hemi = new THREE.HemisphereLight(new THREE.Color('#5a6b80'), new THREE.Color('#1c2024'), 1.35);
+  const hemi = new THREE.HemisphereLight(new THREE.Color('#5a6b80'), new THREE.Color('#1c2024'), 1.6);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(new THREE.Color('#ffb45e'), 3.0);
+  const sun = new THREE.DirectionalLight(new THREE.Color('#ffb45e'), 3.4);
   sun.position.set(-18, 16, 14);
   sun.target.position.set(0, 0, -4);
   sun.castShadow = true;
@@ -147,7 +147,7 @@ export function createWorld(scene) {
   sun.shadow.bias = -0.0006;
   scene.add(sun, sun.target);
   for (const site of Object.values(SITES)) {
-    const lamp = new THREE.PointLight(new THREE.Color(PALETTE.amber), 14, 16, 1.6);
+    const lamp = new THREE.PointLight(new THREE.Color(PALETTE.amber), 20, 18, 1.6);
     lamp.position.set(site.center.x, 4.2, site.center.z);
     scene.add(lamp);
     const pole = new THREE.Mesh(new THREE.BoxGeometry(0.18, 4.4, 0.18), mats.steel);

@@ -37,10 +37,12 @@ export function createHud() {
   const play = $('play');
   const buyMenu = $('buy-menu');
   const killfeed = $('killfeed');
+  const radioFeed = $('radio-feed');
   const banner = $('banner');
   const bannerTitle = $('banner-title');
   const bannerSub = $('banner-sub');
   const vignette = $('damage-vignette');
+  const flashVignette = $('flash-vignette');
   const crosshair = $('crosshair');
   let bannerTimer = 0;
   let hitTimer = 0;
@@ -51,11 +53,11 @@ export function createHud() {
       $('health-fill').style.width = `${Math.max(0, hp)}%`;
       $('health-fill').classList.toggle('low', hp <= 30);
     },
-    setAmmo(mag, reserve, weaponName, grenades) {
+    setAmmo(mag, reserve, weaponName, frags, smokes = 0, flashes = 0) {
       $('ammo-mag').textContent = String(mag);
       $('ammo-reserve').textContent = `/ ${reserve}`;
       $('weapon-name').textContent = weaponName;
-      $('grenades').textContent = `◉ ${grenades}`;
+      $('grenades').textContent = `◉ ${frags} · Q ${smokes} · E ${flashes}`;
       $('ammo').classList.toggle('empty', mag === 0);
     },
     setMoney(value) {
@@ -91,6 +93,9 @@ export function createHud() {
       vignette.classList.add('on');
       setTimeout(() => vignette.classList.remove('on'), 220);
     },
+    setFlash(level) {
+      flashVignette.style.opacity = String(Math.max(0, Math.min(1, level)));
+    },
     killfeed(html) {
       const entry = document.createElement('div');
       entry.className = 'feed-entry';
@@ -98,6 +103,14 @@ export function createHud() {
       killfeed.prepend(entry);
       while (killfeed.children.length > 4) killfeed.lastChild.remove();
       setTimeout(() => entry.remove(), 6000);
+    },
+    radio(html) {
+      const entry = document.createElement('div');
+      entry.className = 'feed-entry';
+      entry.innerHTML = html;
+      radioFeed.prepend(entry);
+      while (radioFeed.children.length > 3) radioFeed.lastChild.remove();
+      setTimeout(() => entry.remove(), 8000);
     },
     banner(text, sub = '') {
       bannerTitle.textContent = text;
