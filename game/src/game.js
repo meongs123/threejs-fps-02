@@ -17,16 +17,19 @@ const START_MONEY = 800;
 const IDLE_HANDOFF_SECONDS = 11;
 
 // Buy keys match the live weapon keys: 2-4 buy the guns, G/Q/E buy the
-// utilities they throw, so the menu and the HUD never disagree.
+// utilities they throw, so the menu and the HUD never disagree. 6/7 buy
+// armour; 5 is the knife slot in the live round (the knife is free).
 const SHOP = [
   { id: 'rifle', code: 'Digit2', name: 'VK-9 Carbine', desc: 'Auto rifle. The workhorse.' },
   { id: 'shotgun', code: 'Digit3', name: 'Scatter-12', desc: '8 pellets up close.' },
   { id: 'dmr', code: 'Digit4', name: 'Longbow DMR', desc: 'One shot, long sightlines.' },
+  { id: 'lightvest', code: 'Digit6', name: 'Light Vest', desc: 'Body hits hurt 30% less. Lost on death.' },
+  { id: 'heavyvest', code: 'Digit7', name: 'Heavy Vest + Helmet', desc: 'Body 30% less, headshots 50% less. Lost on death.' },
   { id: 'grenade', code: 'KeyG', name: 'Spark-4 Frag', desc: 'Timed frag grenade.' },
   { id: 'smoke', code: 'KeyQ', name: 'Dusk Smoke', desc: 'Blocks sight for 10 s.' },
   { id: 'flash', code: 'KeyE', name: 'Flare Flash', desc: 'Blinds anyone facing it.' },
 ];
-const PRICES = { rifle: 2700, shotgun: 1050, dmr: 4750, grenade: 300, smoke: 250, flash: 200 };
+const PRICES = { rifle: 2700, shotgun: 1050, dmr: 4750, lightvest: 650, heavyvest: 1000, grenade: 300, smoke: 250, flash: 200 };
 const UTIL_MAX = { grenade: 3, smoke: 2, flash: 2 };
 
 export function createGame(deps) {
@@ -55,16 +58,26 @@ export function createGame(deps) {
   let money = START_MONEY;
   let lossStreak = 0;
   let kills = 0;
+  let playerDeaths = 0;
+  let playerAssists = 0;
   let phaseTimer = 0;
   let roundEndTimer = 0;
   let roundEndInfo = null;
   let playerHealth = 100;
   let playerAlive = true;
+  let armor = { lightvest: false, heavyvest: false };
   let grenades = 1;
   let smokes = 0;
   let flashes = 0;
   let throws = { frag: 0, smoke: 0, flash: 0 };
   let assignedSite = SITES.A;
+  // Halftime swap: rounds 1-4 the player attacks with Vanguard; from round 5
+  // the player defends with the Jackals while the Vanguard bots keep
+  // attacking and planting — one match plays both sides of the spike.
+  const ATTACK_TEAM = 'vanguard';
+  let playerTeam = 'vanguard';
+  let defuseProgress = 0;
+  let pings = [];
   let spike = { state: 'carried', carrier: 'player', carrierBot: null, site: SITES.A, timer: 0, pos: new THREE.Vector3() };
   let plantProgress = 0;
   let grenadeProjectiles = [];
@@ -77,10 +90,13 @@ export function createGame(deps) {
   let lastRadioAt = -10;
   let flashBlindUntil = 0;
   let flashBlindStrength = 0;
+  let scoped = false; // True while the player holds right-click with the DMR.
+  let lastMapAt = -1; // Minimap snapshot throttle (see syncHud).
+  let lastMap = null;
   const shootables = world.shootables;
 
   function aliveCount(team) {
-    return (team === 'vanguard' && playerAlive ? 1 : 0) + bots.aliveCount(team);
+    return (team === playerTeam && playerAlive ? 1 : 0) + bots.aliveCount(team);
   }
 
   function currentFlashLevel() {
@@ -97,6 +113,51 @@ export function createGame(deps) {
     hud.setAlive(aliveCount('vanguard'), aliveCount('jackal'));
     hud.setTimer(phase === 'buy' ? phaseTimer : phase === 'live' ? phaseTimer : 0, phase);
     hud.setFlash(currentFlashLevel());
+    hud.setArmor(armor.lightvest, armor.heavyvest);
+    hud.setScope(scoped);
+    // Minimap at 10 Hz, not every step: the snapshot allocates, so rebuild
+    // it only when a tenth of a second has passed and reuse it otherwise.
+    if (elapsed - lastMapAt >= 0.1) {
+      lastMapAt = elapsed;
+      lastMap = minimapSnapshot();
+    }
+    if (lastMap) hud.setMinimap(lastMap);
+  }
+
+  // Gunfire pings for the minimap: a shot, a burst or a blast, fading in 4 s.
+  function ping(pos) {
+    pings.push({ x: pos.x, z: pos.z, t: elapsed });
+    if (pings.length > 8) pings.shift();
+  }
+
+  function minimapSnapshot() {
+    const seen = bots.seenBy(playerTeam);
+    const botRows = bots.bots.map((b) => ({
+      team: b.team,
+      x: b.body.position.x,
+      z: b.body.position.z,
+      alive: b.alive,
+      seen: b.team !== playerTeam && seen.some((s) => Math.abs(s.x - b.body.position.x) < 0.01 && Math.abs(s.z - b.body.position.z) < 0.01),
+    }));
+    return {
+      px: player.state.position.x,
+      pz: player.state.position.z,
+      yaw: player.state.yaw,
+      bots: botRows,
+      spike: { x: spike.pos.x, z: spike.pos.z, state: spike.state },
+      pings: pings.filter((p) => elapsed - p.t < 4).map((p) => ({ x: p.x, z: p.z, age: elapsed - p.t })),
+      sites: [SITES.A, SITES.B].map((s) => ({ x: s.center.x, z: s.center.z, name: s.name })),
+      attackTeam: ATTACK_TEAM,
+      playerTeam,
+    };
+  }
+
+  function scoreboardRows() {
+    const rows = [{ name: 'YOU', team: playerTeam, k: kills, d: playerDeaths, a: playerAssists, money }];
+    for (const b of bots.bots) {
+      rows.push({ name: b.name, team: b.team, k: b.stats.k, d: b.stats.d, a: b.stats.a, money: 0 });
+    }
+    return rows;
   }
 
   function feed(html) {
@@ -112,23 +173,44 @@ export function createGame(deps) {
 
   function startRound() {
     assignedSite = round % 2 === 1 ? SITES.A : SITES.B;
+    playerTeam = round < 5 ? 'vanguard' : 'jackal';
+    const defending = playerTeam === 'jackal';
     spike = { state: 'carried', carrier: 'player', carrierBot: null, site: assignedSite, timer: 0, pos: assignedSite.center.clone() };
     playerHealth = 100;
     playerAlive = true;
     grenades = Math.max(grenades, 1);
     plantProgress = 0;
+    defuseProgress = 0;
     idleTimer = 0;
     flashBlindUntil = 0;
     flashBlindStrength = 0;
+    scoped = false;
+    pings = [];
     grenadeProjectiles = [];
     weapons.refill();
-    player.respawn([0, 14], 0);
-    bots.spawnRound({ vanguard: assignedSite, A: SITES.A, B: SITES.B });
+    // Attackers spawn north, defenders south; the player spawns with their side.
+    player.respawn(defending ? [0, -14] : [0, 14], defending ? Math.PI : 0);
+    bots.spawnRound({ vanguard: assignedSite, A: SITES.A, B: SITES.B, attackTeam: ATTACK_TEAM, playerTeam });
+    if (defending) {
+      // The Vanguard bots keep attacking: hand the spike to their first live bot.
+      const carrier = bots.bots.find((b) => b.team === 'vanguard' && b.alive);
+      if (carrier) {
+        carrier.isCarrier = true;
+        spike.carrier = 'bot';
+        spike.carrierBot = carrier;
+        spike.pos.copy(carrier.body.position);
+      }
+    }
     effects.setSpikeProp(spike.pos, 'hidden');
     phase = 'buy';
     phaseTimer = BUY_SECONDS;
-    hud.setSpike(`PLANT THE SPIKE — SITE ${assignedSite.name} · ${assignedSite.label}`);
-    hud.banner(`ROUND ${round}`, `Plant the spike at Site ${assignedSite.name} — ${assignedSite.label}`);
+    if (defending) {
+      hud.setSpike(`DEFEND — VANGUARD PLANTS THE SPIKE · SITE ${assignedSite.name}`);
+      hud.banner(round === 5 ? 'HALFTIME — SIDES SWAP' : `ROUND ${round}`, 'You defend now — hold F on the planted spike to defuse it');
+    } else {
+      hud.setSpike(`PLANT THE SPIKE — SITE ${assignedSite.name} · ${assignedSite.label}`);
+      hud.banner(`ROUND ${round}`, `Plant the spike at Site ${assignedSite.name} — ${assignedSite.label}`);
+    }
     hud.setSpectate(false);
     hud.setFlash(0);
     syncHud();
@@ -139,6 +221,10 @@ export function createGame(deps) {
     money = START_MONEY;
     lossStreak = 0;
     kills = 0;
+    playerDeaths = 0;
+    playerAssists = 0;
+    armor = { lightvest: false, heavyvest: false };
+    bots.resetStats();
     round = 1;
     startRound();
   }
@@ -188,13 +274,13 @@ export function createGame(deps) {
     startRound();
   }
 
-  // Hand the spike to the Vanguard bot closest to the site; if none is alive
-  // it drops where the carrier fell. fromPos is where the drop lands.
+  // Hand the spike to the attacking bot closest to the site; if none is
+  // alive it drops where the carrier fell. fromPos is where the drop lands.
   function transferSpike(fromPos) {
     let carrier = null;
     let bestD = Infinity;
     for (const b of bots.bots) {
-      if (!b.alive || b.team !== 'vanguard') continue;
+      if (!b.alive || b.team !== ATTACK_TEAM) continue;
       const d = Math.hypot(b.body.position.x - assignedSite.center.x, b.body.position.z - assignedSite.center.z);
       if (d < bestD) { bestD = d; carrier = b; }
     }
@@ -220,11 +306,15 @@ export function createGame(deps) {
     spike.carrierBot = null;
     spike.pos.copy(player.state.position);
     dropCooldown = 1.5;
-    feed('<b class="vanguard">YOU</b> dropped the spike');
+    feed(`<b class="${playerTeam}">YOU</b> dropped the spike`);
   }
 
-  function damagePlayer(amount, attackerName) {
+  function damagePlayer(amount, attackerName, part = 'torso') {
     if (!playerAlive || phase !== 'live') return;
+    // Armour is real: a vest (light or heavy) cuts body damage 30%, the
+    // heavy vest's helmet cuts head damage 50%. Both are lost on death.
+    if (part === 'head' && armor.heavyvest) amount = Math.round(amount * 0.5);
+    else if (part !== 'head' && (armor.lightvest || armor.heavyvest)) amount = Math.round(amount * 0.7);
     playerHealth -= amount;
     audio.hurt();
     hud.damageFlash();
@@ -232,23 +322,33 @@ export function createGame(deps) {
     if (playerHealth <= 0) {
       playerHealth = 0;
       playerAlive = false;
+      playerDeaths += 1;
+      armor = { lightvest: false, heavyvest: false };
       hud.setSpectate(true);
-      feed(`<b class="jackal">${attackerName}</b> ▸ <b class="vanguard">YOU</b>`);
+      feed(`<b class="jackal">${attackerName}</b> ▸ <b class="${playerTeam}">YOU</b>`);
       if (spike.state === 'carried' && spike.carrier === 'player') transferSpike(player.state.position);
       syncHud();
     }
   }
 
   function damageBot(bot, amount, part, sourceName) {
-    const killed = bots.damage(bot, amount, part);
+    // Assist credit: the player hit this bot within 5 s and a teammate
+    // finished it. Read the previous hitter before bots.damage overwrites it.
+    const prevBy = bot.stats.lastHitBy;
+    const prevAt = bot.stats.lastHitAt;
+    const killed = bots.damage(bot, amount, part, sourceName);
     if (killed) {
       if (sourceName === 'YOU') {
         kills += 1;
         money += 300;
         audio.kill();
         hud.hitMarker(true);
+      } else if (prevBy === 'YOU' && bots.now() - prevAt <= 5) {
+        playerAssists += 1;
       }
-      feed(`<b class="${bot.team === 'jackal' ? 'vanguard' : 'jackal'}">${sourceName}</b> ▸ <b class="${bot.team}">${bot.name}</b>${part === 'head' ? ' ◉' : ''}`);
+      // The killer's class is their team; YOU wear the player's current side.
+      const srcCls = sourceName === 'YOU' ? playerTeam : (bot.team === 'jackal' ? 'vanguard' : 'jackal');
+      feed(`<b class="${srcCls}">${sourceName}</b> ▸ <b class="${bot.team}">${bot.name}</b>${part === 'head' ? ' ◉' : ''}`);
       if (spike.carrierBot === bot) {
         bot.isCarrier = false;
         transferSpike(bot.body.position);
@@ -267,8 +367,29 @@ export function createGame(deps) {
     }
     if (!weapons.takeRound()) return;
     weapons.pullTrigger();
-    player.recoil(0.009 + def.recoil, (random() * 2 - 1) * 0.004);
+    // Deterministic recoil: the weapon walks its fixed pattern, one step
+    // per shot — the same burst kicks the same way every time.
+    const rk = weapons.recoilStep();
+    player.recoil(0.009 + rk.pitch, rk.yaw);
     camera.getWorldDirection(dir);
+    if (def.kind === 'knife') {
+      // Melee: a short ray against bot hit meshes, head or torso by aim.
+      raycaster.set(camera.position, dir);
+      raycaster.far = def.range;
+      const hit = raycaster.intersectObjects(bots.hitMeshes, false)[0];
+      if (hit && hit.object.userData.bot) {
+        const bot = hit.object.userData.bot;
+        const part = hit.object.userData.part;
+        const amount = part === 'head' ? def.headDamage : def.damage;
+        const killed = damageBot(bot, amount, part, 'YOU');
+        if (!killed) { audio.hit(); hud.hitMarker(false); }
+        effects.impact(hit.point, null, 4);
+      }
+      bots.hearEvent(camera.position, playerTeam);
+      ping(camera.position);
+      syncHud();
+      return;
+    }
     const spread = weapons.spread(player.groundSpeed());
     const pellets = def.pellets || 1;
     let hitSomething = false;
@@ -304,7 +425,8 @@ export function createGame(deps) {
       effects.tracer(muzzle, farPoint);
     }
     // Gunfire is loud: every enemy bot in earshot turns toward it.
-    bots.hearEvent(muzzle, 'vanguard');
+    bots.hearEvent(muzzle, playerTeam);
+    ping(muzzle);
     syncHud();
   }
 
@@ -328,7 +450,8 @@ export function createGame(deps) {
     if (target.kind === 'player') {
       if (hit) {
         const dmg = bot.gun === 'dmr' ? 55 : bot.gun === 'shotgun' ? 26 : 15;
-        damagePlayer(dmg, bot.name);
+        // A DMR shot at the player counts as a headshot for the helmet.
+        damagePlayer(dmg, bot.name, bot.gun === 'dmr' ? 'head' : 'torso');
       }
     } else if (hit) {
       const dmg = bot.gun === 'dmr' ? 55 : bot.gun === 'shotgun' ? 26 : 15;
@@ -337,6 +460,7 @@ export function createGame(deps) {
     }
     if (dist < 45) audio.distantShot();
     bots.hearEvent(bot.body.position, bot.team);
+    ping(bot.body.position);
   }
 
   function throwGrenade(camera) {
@@ -349,7 +473,7 @@ export function createGame(deps) {
     mesh.position.copy(camera.position).addScaledVector(dir, 0.5);
     grenadeVel.copy(dir).multiplyScalar(17);
     grenadeVel.y += 4.5;
-    grenadeProjectiles.push({ mesh, vel: grenadeVel.clone(), fuse: 1.8, bounces: 0, kind: 'frag', team: 'vanguard', source: 'YOU' });
+    grenadeProjectiles.push({ mesh, vel: grenadeVel.clone(), fuse: 1.8, bounces: 0, kind: 'frag', team: playerTeam, source: 'YOU' });
     audio.buy();
     syncHud();
   }
@@ -366,7 +490,7 @@ export function createGame(deps) {
     mesh.position.copy(camera.position).addScaledVector(dir, 0.5);
     grenadeVel.copy(dir).multiplyScalar(15);
     grenadeVel.y += 3.5;
-    grenadeProjectiles.push({ mesh, vel: grenadeVel.clone(), fuse: kind === 'smoke' ? 1.1 : 0.9, bounces: 0, kind, team: 'vanguard', source: 'YOU' });
+    grenadeProjectiles.push({ mesh, vel: grenadeVel.clone(), fuse: kind === 'smoke' ? 1.1 : 0.9, bounces: 0, kind, team: playerTeam, source: 'YOU' });
     audio.buy();
     syncHud();
   }
@@ -429,12 +553,14 @@ export function createGame(deps) {
       effects.spawnSmoke(pos);
       audio.bounce();
       bots.hearEvent(pos, projectile.team);
+      ping(pos);
       return;
     }
     if (projectile.kind === 'flash') {
       effects.flashBurst(pos);
       applyFlashBlind(pos, camera);
       bots.hearEvent(pos, projectile.team);
+      ping(pos);
       return;
     }
     effects.explosion(pos);
@@ -452,6 +578,7 @@ export function createGame(deps) {
       if (d < 5) damagePlayer(Math.round(70 * (1 - d / 5) + 5), 'SPARK-4');
     }
     bots.hearEvent(pos, projectile.team);
+    ping(pos);
   }
 
   function stepGrenades(dt, camera) {
@@ -482,6 +609,16 @@ export function createGame(deps) {
 
   function buyItem(id) {
     if (phase !== 'buy') return;
+    if (id === 'lightvest' || id === 'heavyvest') {
+      // The heavy vest already covers what the light vest does.
+      if (money >= PRICES[id] && !armor[id] && !(id === 'lightvest' && armor.heavyvest)) {
+        money -= PRICES[id];
+        armor[id] = true;
+        audio.buy();
+      } else audio.deny();
+      syncHud();
+      return;
+    }
     if (UTIL_MAX[id] !== undefined) {
       const cur = id === 'grenade' ? grenades : id === 'smoke' ? smokes : flashes;
       if (money >= PRICES[id] && cur < UTIL_MAX[id]) {
@@ -509,9 +646,12 @@ export function createGame(deps) {
       playerAlive,
       playerBody: player.state,
       playerSpeed: player.groundSpeed(),
+      playerTeam,
       assignedSite,
+      attackTeam: ATTACK_TEAM,
       spikeState: spike.state,
       spikePos: spike.pos,
+      spikeCarrierPos: spike.carrierBot ? spike.carrierBot.body.position : (spike.carrier === 'player' ? player.state.position : spike.pos),
       timeLeft: phaseTimer,
       smokeSpheres: () => effects.smokeSpheres(),
       onPlant(bot) {
@@ -530,6 +670,9 @@ export function createGame(deps) {
         endRound('jackal', `${bot.name} defused the spike`);
       },
       onPickup(bot) {
+        // Only one carrier: clear the flag on whoever held it before (two
+        // bots can touch a dropped spike in the same step).
+        if (spike.carrierBot && spike.carrierBot !== bot) spike.carrierBot.isCarrier = false;
         bot.isCarrier = true;
         spike.carrier = 'bot';
         spike.carrierBot = bot;
@@ -557,7 +700,7 @@ export function createGame(deps) {
       elapsed += dt;
       phaseTimer -= dt;
       hud.setTimer(phaseTimer, 'buy');
-      hud.showBuy(true, money, weapons.owned, PRICES);
+      hud.showBuy(true, money, shopOwned(), PRICES);
       for (const item of SHOP) {
         if (input.keys.has(item.code) && !lastBuyKey.has(item.code)) buyItem(item.id);
       }
@@ -583,7 +726,7 @@ export function createGame(deps) {
         effects.explosion(spike.pos);
         audio.explosion();
         spike.state = 'exploded';
-        endRound('vanguard', 'The spike detonated at Site ' + spike.site.name);
+        endRound(ATTACK_TEAM, 'The spike detonated at Site ' + spike.site.name);
         return;
       }
     }
@@ -599,8 +742,8 @@ export function createGame(deps) {
       effects.setSpikeProp(spike.pos, 'hidden');
     }
 
-    // Planting: hold F on the site while carrying the spike.
-    if (playerAlive && spike.state === 'carried' && spike.carrier === 'player') {
+    // Planting: hold F on the site while carrying the spike (attacking).
+    if (playerAlive && playerTeam === 'vanguard' && spike.state === 'carried' && spike.carrier === 'player') {
       const d = Math.hypot(player.state.position.x - assignedSite.center.x, player.state.position.z - assignedSite.center.z);
       const still = player.groundSpeed() < 0.6;
       if (input.keys.has('KeyF') && d < 3.2 && still) {
@@ -615,7 +758,7 @@ export function createGame(deps) {
           audio.plantBeep();
           hud.banner('SPIKE PLANTED', 'Jackals must defuse it');
           hud.setSpike('SPIKE PLANTED');
-          feed('<b class="vanguard">YOU</b> planted the spike at Site ' + assignedSite.name);
+          feed(`<b class="${playerTeam}">YOU</b> planted the spike at Site ${assignedSite.name}`);
         }
       } else {
         if (plantProgress > 0) plantProgress = 0;
@@ -623,16 +766,40 @@ export function createGame(deps) {
       }
     }
 
-    // Pick up a dropped spike by walking over it (not during the short
-    // cooldown right after the player dropped it — see dropCooldown).
+    // Defusing: after the halftime swap the player defends — hold F on the
+    // planted spike for 5 s to defuse it and take the round.
+    if (playerAlive && playerTeam === 'jackal' && spike.state === 'planted') {
+      const d = Math.hypot(player.state.position.x - spike.pos.x, player.state.position.z - spike.pos.z);
+      const still = player.groundSpeed() < 0.6;
+      if (input.keys.has('KeyF') && d < 2.6 && still) {
+        defuseProgress += dt / 5;
+        hud.setPlantProgress(Math.min(1, defuseProgress), 'DEFUSING…');
+        if (defuseProgress >= 1) {
+          spike.state = 'defused';
+          defuseProgress = 0;
+          hud.setPlantProgress(null);
+          audio.roundWin();
+          feed(`<b class="${playerTeam}">YOU</b> defused the spike`);
+          endRound('jackal', 'YOU defused the spike');
+          return;
+        }
+      } else {
+        if (defuseProgress > 0) defuseProgress = 0;
+        hud.setPlantProgress(null);
+      }
+    }
+
+    // Pick up a dropped spike by walking over it — only while attacking.
+    // (not during the short cooldown right after the player dropped it —
+    // see dropCooldown).
     if (dropCooldown > 0) dropCooldown -= dt;
-    if (playerAlive && spike.state === 'dropped' && dropCooldown <= 0) {
+    if (playerAlive && playerTeam === 'vanguard' && spike.state === 'dropped' && dropCooldown <= 0) {
       const d = Math.hypot(player.state.position.x - spike.pos.x, player.state.position.z - spike.pos.z);
       if (d < 1.8) {
         spike.state = 'carried';
         spike.carrier = 'player';
         spike.carrierBot = null;
-        feed('<b class="vanguard">YOU</b> picked up the spike');
+        feed(`<b class="${playerTeam}">YOU</b> picked up the spike`);
       }
     }
 
@@ -665,11 +832,18 @@ export function createGame(deps) {
     else if (vanguardAlive === 0 && spike.state !== 'planted') endRound('jackal', 'Vanguard squad eliminated');
     else if (phaseTimer <= 0 && spike.state !== 'planted') endRound('jackal', 'Time expired — spike never planted');
 
-    // Zoom: right mouse on the DMR narrows the field of view.
+    // Zoom: right mouse on the DMR narrows the field of view, and the
+    // scope reticle overlay comes up with it.
     if (camera.userData.zoomTarget === undefined) camera.userData.zoomTarget = 74;
-    camera.userData.zoomTarget = input.altFire && weapons.current === 'dmr' && playerAlive ? 40 : 74;
+    scoped = input.altFire && weapons.current === 'dmr' && playerAlive;
+    camera.userData.zoomTarget = scoped ? 40 : 74;
 
     syncHud();
+  }
+
+  // Buy menu ownership: guns from the armoury, armour from the match.
+  function shopOwned() {
+    return { ...weapons.owned, lightvest: armor.lightvest, heavyvest: armor.heavyvest };
   }
 
   return {
@@ -681,6 +855,12 @@ export function createGame(deps) {
     get round() { return round; },
     get spike() { return spike; },
     get shop() { return SHOP; },
+    get armor() { return armor; },
+    get attackTeam() { return ATTACK_TEAM; },
+    get playerTeam() { return playerTeam; },
+    get playerStats() { return { kills, deaths: playerDeaths, assists: playerAssists }; },
+    get scoreboard() { return scoreboardRows(); },
+    shopOwned,
     get grenades() { return grenades; },
     get smokes() { return smokes; },
     get flashes() { return flashes; },
@@ -715,6 +895,13 @@ export function createGame(deps) {
       else if (kind === 'flash') flashes += 1;
       else grenades += 1;
       syncHud();
+    },
+    // Test hook: top the player's money up (used to buy the heavy vest
+    // in play-tests; the live game only ever earns money from rounds).
+    debugMoney(amount) {
+      money += amount;
+      syncHud();
+      return money;
     },
   };
 }

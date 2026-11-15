@@ -9,6 +9,8 @@ export function createInput(canvas, onLockChange) {
     if (down) keys.add(event.code);
     else keys.delete(event.code);
     if (event.code === 'Space') event.preventDefault();
+    // Tab opens the scoreboard; keep the browser from moving focus away.
+    if (event.code === 'Tab') event.preventDefault();
   }
 
   window.addEventListener('keydown', (event) => setKey(event, true));

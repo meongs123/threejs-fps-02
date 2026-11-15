@@ -4,6 +4,7 @@
 // Every box is a collider for bodies and a surface a bullet stops on.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
+import { groundTexture, containerTexture, hazardTexture, stencilTexture, skyTexture, waterTexture } from './textures.js';
 
 // Waypoint nodes [x, z] bots walk between; edges are index pairs.
 const NODES = [
@@ -18,8 +19,8 @@ const NODES = [
 ];
 const EDGES = [
   [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [1, 6], [2, 7], [3, 8], [4, 8],
-  [5, 6], [6, 7], [7, 8], [5, 9], [6, 10], [7, 10], [8, 11], [5, 27], [8, 28],
-  [9, 10], [10, 11], [9, 12], [10, 13], [11, 14], [10, 15], [12, 16], [13, 16],
+  [5, 6], [6, 7], [7, 8], [5, 9], [7, 11], [8, 11], [5, 27], [8, 28],
+  [9, 10], [10, 11], [9, 12], [11, 14], [12, 16], [13, 16],
   [14, 19], [15, 19], [12, 13], [13, 14], [14, 15], [16, 17], [16, 18],
   [19, 20], [19, 21], [17, 22], [18, 22], [20, 25], [21, 26], [22, 23],
   [23, 24], [24, 25], [25, 26], [12, 22], [15, 26], [9, 27], [11, 28],
@@ -37,6 +38,8 @@ export const SPAWNS = {
 export function createWorld(scene) {
   const group = new THREE.Group();
   scene.add(group);
+  // Dusk gradient sky replaces the flat colour (main.js sets a colour first).
+  scene.background = skyTexture();
   const mats = {};
   for (const name of Object.keys(PALETTE)) {
     mats[name] = new THREE.MeshStandardMaterial({
@@ -45,11 +48,21 @@ export function createWorld(scene) {
       metalness: name === 'steel' ? 0.45 : 0.05,
     });
   }
+  // Textured materials, built once from canvas (no files, no network).
+  const groundMat = new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 0.95, metalness: 0.02 });
+  const texMats = {
+    rust: new THREE.MeshStandardMaterial({ map: containerTexture('#a8542c', 'KES-2210', '#f0a830'), roughness: 0.8, metalness: 0.25 }),
+    rustDark: new THREE.MeshStandardMaterial({ map: containerTexture('#7e3d20', 'KES-1187', '#e8b62a'), roughness: 0.85, metalness: 0.25 }),
+    teal: new THREE.MeshStandardMaterial({ map: containerTexture('#2e6f6a', 'KES-9044', '#ece7db'), roughness: 0.8, metalness: 0.25 }),
+    container: new THREE.MeshStandardMaterial({ map: containerTexture('#8a6d3b', 'KES-3301', '#f0a830'), roughness: 0.8, metalness: 0.25 }),
+    containerB: new THREE.MeshStandardMaterial({ map: containerTexture('#5d7a68', 'KES-5520', '#ece7db'), roughness: 0.8, metalness: 0.25 }),
+  };
   const colliders = [];
   const shootables = [];
 
   function box(w, h, d, x, y, z, material, collide = true) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats[material]);
+    const mat = typeof material === 'string' ? mats[material] : material;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     mesh.position.set(x, y, z);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -62,7 +75,7 @@ export function createWorld(scene) {
   }
 
   // Ground and perimeter.
-  box(48.4, 0.4, 36.4, 0, -0.2, 0, 'ground');
+  box(48.4, 0.4, 36.4, 0, -0.2, 0, groundMat);
   box(0.5, 5, 36.4, -24.2, 2.5, 0, 'concrete');
   box(0.5, 5, 36.4, 24.2, 2.5, 0, 'concrete');
   box(48.4, 5, 0.5, 0, 2.5, -18.2, 'concrete');
@@ -83,33 +96,43 @@ export function createWorld(scene) {
   box(0.7, 7, 0.7, -21, 3.5, -12, 'steel');
   box(0.7, 7, 0.7, -21, 3.5, -4, 'steel');
   box(0.6, 0.6, 9.4, -21, 7, -8, 'steel');
-  box(6.1, 2.6, 2.5, -17, 1.3, -12.5, 'rust');
-  box(6.1, 2.6, 2.5, -17, 3.9, -12.5, 'containerB');
-  box(2.5, 2.6, 6.1, -13.2, 1.3, -8, 'teal');
-  box(1.2, 1.2, 1.2, -14.5, 0.6, -4.5, 'container');
-  box(1.2, 1.2, 1.2, -19.5, 0.6, -5, 'container');
+  // Crane jib reaching over the yard, hook cable and block hanging below it.
+  box(0.5, 0.5, 10, -16, 7.6, -8, 'steel');
+  box(0.06, 3.2, 0.06, -12.5, 5.6, -8, 'concrete');
+  box(0.5, 0.6, 0.5, -12.5, 3.7, -8, 'amber');
+  // Site A stacks, pulled 1 m north: their south faces used to sit 0.25 m
+  // from the south spawn line and wedged the defenders spawning at (±16, -14).
+  box(6.1, 2.6, 2.5, -17, 1.3, -11.5, texMats.rust);
+  box(6.1, 2.6, 2.5, -17, 3.9, -11.5, texMats.containerB);
+  box(2.5, 2.6, 6.1, -13.2, 1.3, -8, texMats.teal);
+  box(1.2, 1.2, 1.2, -14.5, 0.6, -4.5, texMats.container);
+  box(1.2, 1.2, 1.2, -19.5, 0.6, -5, texMats.container);
 
   // Site B: container rows and a low wall.
-  box(6.1, 2.6, 2.5, 17, 1.3, -12.5, 'containerB');
-  box(2.5, 2.6, 6.1, 20.5, 1.3, -7, 'rust');
-  box(6.1, 2.6, 2.5, 17, 3.9, -12.5, 'rustDark');
-  box(1.2, 1.2, 1.2, 13.5, 0.6, -5, 'container');
+  box(6.1, 2.6, 2.5, 17, 1.3, -11.5, texMats.containerB);
+  box(2.5, 2.6, 6.1, 20.5, 1.3, -7, texMats.rust);
+  box(6.1, 2.6, 2.5, 17, 3.9, -11.5, texMats.rustDark);
+  box(1.2, 1.2, 1.2, 13.5, 0.6, -5, texMats.container);
   box(4.5, 1.1, 0.6, 14.5, 0.55, -11, 'concrete');
 
   // Mid cover: crates and barrels along the lanes.
-  box(1.2, 1.2, 1.2, -12, 0.6, 6, 'container');
-  box(1.2, 1.2, 1.2, -12, 1.8, 6, 'rust');
-  box(1.2, 1.2, 1.2, 12, 0.6, 6, 'containerB');
+  box(1.2, 1.2, 1.2, -12, 0.6, 6, texMats.container);
+  box(1.2, 1.2, 1.2, -12, 1.8, 6, texMats.rust);
+  box(1.2, 1.2, 1.2, 12, 0.6, 6, texMats.containerB);
   box(2.4, 1.1, 1.2, -4, 0.55, 8, 'steel');
   box(2.4, 1.1, 1.2, 5, 0.55, 8, 'steel');
-  box(1.2, 1.2, 1.2, -8, 0.6, -6, 'rust');
-  box(1.2, 1.2, 1.2, 8, 0.6, -6, 'container');
-  box(1.2, 2.4, 1.2, -21, 1.2, 6, 'teal');
-  box(1.2, 2.4, 1.2, 21, 1.2, 6, 'teal');
-  box(3.2, 0.9, 1.4, 0, 0.45, 12, 'concrete');
+  box(1.2, 1.2, 1.2, -8, 0.6, -6, texMats.rust);
+  box(1.2, 1.2, 1.2, 8, 0.6, -6, texMats.container);
+  box(1.2, 2.4, 1.2, -21, 1.2, 6, texMats.teal);
+  box(1.2, 2.4, 1.2, 21, 1.2, 6, texMats.teal);
+  // Waist-high mid cover, kept out of the centre spawn lane (it used to sit
+  // at (0, 12) and wedged the player against it one step out of spawn).
+  box(3.2, 0.9, 1.4, 6, 0.45, 12, 'concrete');
 
   // Site pads: glowing floor marks so a site reads at a glance.
   const padGeo = new THREE.PlaneGeometry(5.4, 5.4);
+  const hazardMat = new THREE.MeshBasicMaterial({ map: hazardTexture(), transparent: true, opacity: 0.85 });
+  const stencilGeo = new THREE.PlaneGeometry(4.6, 4.6);
   for (const site of Object.values(SITES)) {
     const pad = new THREE.Mesh(
       padGeo,
@@ -118,6 +141,54 @@ export function createWorld(scene) {
     pad.rotation.x = -Math.PI / 2;
     pad.position.set(site.center.x, 0.03, site.center.z);
     group.add(pad);
+    // Stencilled site letter on the pad.
+    const stencil = new THREE.Mesh(
+      stencilGeo,
+      new THREE.MeshBasicMaterial({ map: stencilTexture(site.name), transparent: true, opacity: 0.9, depthWrite: false }),
+    );
+    stencil.rotation.x = -Math.PI / 2;
+    stencil.position.set(site.center.x, 0.045, site.center.z);
+    group.add(stencil);
+    // Hazard striping framing the bomb zone.
+    for (const [w, d, ox, oz] of [[5.9, 0.4, 0, -2.9], [5.9, 0.4, 0, 2.9], [0.4, 5.9, -2.9, 0], [0.4, 5.9, 2.9, 0]]) {
+      const strip = new THREE.Mesh(new THREE.PlaneGeometry(w, d), hazardMat);
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.set(site.center.x + ox, 0.04, site.center.z + oz);
+      group.add(strip);
+    }
+  }
+
+  // Harbour water and a barge beyond the south fence — outside the walls,
+  // no colliders, purely for the dusk read in screenshots.
+  const water = new THREE.Mesh(
+    new THREE.PlaneGeometry(60, 12),
+    new THREE.MeshStandardMaterial({ map: waterTexture(), roughness: 0.35, metalness: 0.4 }),
+  );
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(0, -0.06, -24.5);
+  scene.add(water);
+  const barge = new THREE.Group();
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(12, 1.4, 4.5), mats.steel);
+  hull.position.y = 0.5;
+  barge.add(hull);
+  const bargeBox = new THREE.Mesh(new THREE.BoxGeometry(3, 2.4, 2.4), texMats.rustDark);
+  bargeBox.position.set(-2.5, 1.9, 0);
+  barge.add(bargeBox);
+  const bargeBox2 = new THREE.Mesh(new THREE.BoxGeometry(3, 2.4, 2.4), texMats.teal);
+  bargeBox2.position.set(2.5, 1.9, 0);
+  barge.add(bargeBox2);
+  barge.position.set(8, 0, -24.5);
+  scene.add(barge);
+
+  // Hanging work lamps under the warehouse roof, lit bulbs with cables.
+  const bulbMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.amber), emissive: new THREE.Color(PALETTE.amber), emissiveIntensity: 2 });
+  for (const x of [-3, 3]) {
+    const cable = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.5, 0.04), mats.steel);
+    cable.position.set(x, 3.3, 0);
+    group.add(cable);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), bulbMat);
+    bulb.position.set(x, 3.0, 0);
+    group.add(bulb);
   }
 
   // Distant skyline silhouettes, outside the walls, no colliders.
@@ -150,6 +221,9 @@ export function createWorld(scene) {
     const lamp = new THREE.PointLight(new THREE.Color(PALETTE.amber), 20, 18, 1.6);
     lamp.position.set(site.center.x, 4.2, site.center.z);
     scene.add(lamp);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.amber), emissive: new THREE.Color(PALETTE.amber), emissiveIntensity: 2.5 }));
+    bulb.position.set(site.center.x, 4.2, site.center.z);
+    scene.add(bulb);
     const pole = new THREE.Mesh(new THREE.BoxGeometry(0.18, 4.4, 0.18), mats.steel);
     pole.position.set(site.center.x + 2.6, 2.2, site.center.z + 2.6);
     pole.castShadow = true;

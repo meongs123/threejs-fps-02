@@ -67,6 +67,7 @@ export function createAudio() {
       if (kind === 'shotgun') { noise(0.28, 900, 0.5); tone(140, 45, 0.22, 0.4); }
       else if (kind === 'dmr') { noise(0.32, 1600, 0.55); tone(180, 50, 0.3, 0.45); }
       else if (kind === 'pistol') { noise(0.14, 2400, 0.35); tone(220, 90, 0.1, 0.25); }
+      else if (kind === 'knife') { noise(0.12, 3200, 0.18, 'bandpass'); }
       else { noise(0.16, 1800, 0.42); tone(160, 60, 0.14, 0.32); }
     },
     distantShot() {

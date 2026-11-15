@@ -20,6 +20,7 @@ export function createPlayer(colliders, spawn) {
   const mover = createMover(colliders, 0.34, STAND_HEIGHT, CROUCH_HEIGHT);
   const body = makeBody(spawn[0], spawn[1], Math.PI);
   const wish = new THREE.Vector3();
+  let speedMul = 1; // The knife is light: +15% run speed while it is out.
 
   function look(dx, dy, sensitivity = 0.0022) {
     body.yaw -= dx * sensitivity;
@@ -52,7 +53,7 @@ export function createPlayer(colliders, spawn) {
       wish.set(-sin * forward + cos * strafe, 0, -cos * forward - sin * strafe).normalize();
     }
 
-    const speed = body.crouching ? CROUCH_SPEED : WALK_SPEED;
+    const speed = (body.crouching ? CROUCH_SPEED : WALK_SPEED) * speedMul;
     const blend = Math.min(1, (body.onGround ? GROUND_ACCEL : AIR_ACCEL) * dt / speed);
     body.velocity.x += (wish.x * speed - body.velocity.x) * blend;
     body.velocity.z += (wish.z * speed - body.velocity.z) * blend;
@@ -75,6 +76,8 @@ export function createPlayer(colliders, spawn) {
     step,
     look,
     recoil,
+    setSpeedMul(value) { speedMul = value; },
+    get speedMul() { return speedMul; },
     respawn(spawnPoint, yaw) {
       body.position.set(spawnPoint[0], 0, spawnPoint[1]);
       body.velocity.set(0, 0, 0);

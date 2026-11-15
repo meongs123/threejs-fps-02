@@ -52,6 +52,7 @@ let accumulator = 0;
 let lastTime = performance.now();
 let prevFiring = false;
 let prevKeys = new Set();
+let scoreShown = false;
 let elapsed = 0;
 let fovCurrent = 74;
 
@@ -110,7 +111,14 @@ function step(dt) {
       if (edgePressed('Digit2')) weapons.equip('rifle');
       if (edgePressed('Digit3')) weapons.equip('shotgun');
       if (edgePressed('Digit4')) weapons.equip('dmr');
+      if (edgePressed('Digit5')) weapons.equip('knife');
+      // The knife is light: +15% run speed while it is out.
+      player.setSpeedMul(weapons.def.kind === 'knife' ? 1.15 : 1);
     }
+    // Scoreboard while Tab is held (build once on press, hide on release).
+    const tabHeld = input.state.keys.has('Tab');
+    if (tabHeld && !scoreShown) { scoreShown = true; hud.showScoreboard(true, game.scoreboard); }
+    else if (!tabHeld && scoreShown) { scoreShown = false; hud.showScoreboard(false); }
     if (edgePressed('KeyG')) game.throwGrenade(camera);
     if (edgePressed('KeyQ')) game.throwUtility('smoke', camera);
     if (edgePressed('KeyE')) game.throwUtility('flash', camera);
@@ -183,7 +191,7 @@ function stageShot() {
   game.newMatch();
   hud.hideOverlay();
   if (shot === 'buy') {
-    hud.showBuy(true, game.money, weapons.owned, { rifle: 2700, shotgun: 1050, dmr: 4750, grenade: 300, smoke: 250, flash: 200 });
+    hud.showBuy(true, game.money, weapons.owned, { rifle: 2700, shotgun: 1050, dmr: 4750, lightvest: 650, heavyvest: 1000, grenade: 300, smoke: 250, flash: 200 });
     document.getElementById('banner').classList.remove('on');
     body.position.set(0, 0, 13);
     body.yaw = 0;
@@ -284,6 +292,7 @@ window.__game = {
       targetKey: b.targetKey, reaction: +b.reaction.toFixed(2),
       burstLeft: b.burstLeft, path: b.path, pathIndex: b.pathIndex,
       hasTarget: !!b.target, blindUntil: +b.blindUntil.toFixed(2),
+      plantProgress: +b.plantProgress.toFixed(2), defuseProgress: +b.defuseProgress.toFixed(2),
       hearUntil: +b.hearUntil.toFixed(2), smokeLeft: b.smokeLeft, fragLeft: b.fragLeft,
       lastSeen: b.hasLastSeen ? { x: +b.lastSeen.x.toFixed(1), z: +b.lastSeen.z.toFixed(1) } : null,
     };
@@ -312,6 +321,15 @@ window.__game = {
   throwFlash() { game.debugArm('flash'); game.throwUtility('flash', camera); return game.flashes; },
   utility() { return { frag: game.grenades, smoke: game.smokes, flash: game.flashes, throws: game.throws, smokeActive: game.smokeCount }; },
   ammo() { return { mag: weapons.ammo.mag, reserve: weapons.ammo.reserve, weapon: weapons.current, reloading: weapons.reloading }; },
+  weapon() { return { current: weapons.current, kind: weapons.def.kind, speedMul: player.speedMul }; },
+  equip(id) { return weapons.equip(id); },
+  recoilStep() { return weapons.recoilStep(); },
+  armor() { return game.armor; },
+  playerTeam() { return game.playerTeam; },
+  scoreboard() { return game.scoreboard; },
+  buyItem(id) { game.buyItem(id); return { money: game.money, armor: game.armor }; },
+  damagePlayer(amount, attacker, part) { game.damagePlayer(amount, attacker || 'VIPER', part || 'torso'); return game.playerHealth; },
+  nextRound() { game.nextRound(); return { round: game.round, playerTeam: game.playerTeam, spike: game.spike.state }; },
   aim(x, y, z) { aimAt(new THREE.Vector3(x, y, z)); return 'ok'; },
   spikeCarrier() { return { state: game.spike.state, carrier: game.spike.carrier, carrierBot: game.spike.carrierBot ? game.spike.carrierBot.name : null, idleTimer: +game.idleTimer.toFixed(1), x: +game.spike.pos.x.toFixed(1), z: +game.spike.pos.z.toFixed(1) }; },
   flashLevel() { return +game.flashLevel.toFixed(2); },
@@ -322,6 +340,8 @@ window.__game = {
   // a check needs the real input path instead of game.step alone.
   stepMain(n) { for (let i = 0; i < n; i += 1) step(FIXED_STEP); return game.phase; },
   debugPlant() { game.debugPlant(); return game.spike.state; },
+  debugMoney(n) { return game.debugMoney(n); },
+  setAltFire(on) { input.state.altFire = !!on; return input.state.altFire; },
   start() { if (game.phase === 'lobby') { game.newMatch(); started = true; } },
   skipBuy,
 };

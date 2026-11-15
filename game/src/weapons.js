@@ -10,21 +10,31 @@ export const WEAPONS = {
     id: 'pistol', name: 'P9 Sidearm', short: 'P9', price: 0, kind: 'pistol',
     mag: 12, reserve: 36, gap: 0.16, reload: 1.3, damage: 22, headDamage: 46,
     spreadStill: 0.003, spreadMove: 0.02, recoil: 0.008, auto: false, zoom: 0,
+    recoilPattern: [[0.008, 0], [0.009, 0.002], [0.009, -0.002], [0.01, 0.001], [0.008, -0.001], [0.009, 0.002], [0.01, 0], [0.009, -0.002]],
   },
   rifle: {
     id: 'rifle', name: 'VK-9 Carbine', short: 'VK-9', price: 2700, kind: 'rifle',
     mag: 30, reserve: 90, gap: 0.105, reload: 1.9, damage: 26, headDamage: 78,
     spreadStill: 0.0022, spreadMove: 0.028, recoil: 0.011, auto: true, zoom: 0,
+    recoilPattern: [[0.011, 0], [0.012, 0.003], [0.012, -0.004], [0.013, 0.005], [0.013, -0.005], [0.014, 0.003], [0.014, -0.002], [0.015, 0.004], [0.015, -0.004], [0.016, 0]],
   },
   shotgun: {
     id: 'shotgun', name: 'Scatter-12', short: 'S-12', price: 1050, kind: 'shotgun',
     mag: 6, reserve: 24, gap: 0.85, reload: 2.6, damage: 9, headDamage: 16,
     spreadStill: 0.03, spreadMove: 0.05, recoil: 0.03, auto: false, zoom: 0, pellets: 8,
+    recoilPattern: [[0.03, 0], [0.032, 0.004], [0.028, -0.003]],
   },
   dmr: {
     id: 'dmr', name: 'Longbow DMR', short: 'LGB', price: 4750, kind: 'dmr',
     mag: 10, reserve: 20, gap: 0.9, reload: 2.8, damage: 62, headDamage: 180,
     spreadStill: 0.0009, spreadMove: 0.03, recoil: 0.024, auto: false, zoom: 0.55,
+    recoilPattern: [[0.024, 0], [0.026, 0.002], [0.025, -0.002]],
+  },
+  knife: {
+    id: 'knife', name: 'Tactical Knife', short: 'KNIFE', price: 0, kind: 'knife',
+    mag: 0, reserve: 0, gap: 0.45, reload: 0, damage: 40, headDamage: 65,
+    spreadStill: 0, spreadMove: 0, recoil: 0, auto: false, zoom: 0, range: 2.2,
+    recoilPattern: [[0.004, 0]],
   },
 };
 
@@ -46,6 +56,16 @@ function buildViewModel(def) {
     part(body, 0.06, 0.09, 0.24, 0, 0, -0.1);
     part(grip, 0.055, 0.14, 0.07, 0, -0.09, 0.04);
     part(dark, 0.02, 0.03, 0.05, 0, 0.03, -0.2);
+  } else if (def.kind === 'knife') {
+    // A short blade held low: handle, guard and a steel edge.
+    part(grip, 0.05, 0.05, 0.16, 0, -0.02, 0.05);
+    part(dark, 0.06, 0.015, 0.03, 0, 0, -0.04);
+    const blade = new THREE.Mesh(
+      new THREE.BoxGeometry(0.035, 0.012, 0.3),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0xb9c2cc), roughness: 0.25, metalness: 0.85 }),
+    );
+    blade.position.set(0, 0, -0.2);
+    group.add(blade);
   } else if (def.kind === 'shotgun') {
     part(body, 0.09, 0.1, 0.5, 0, 0, -0.15);
     part(dark, 0.05, 0.05, 0.44, 0, 0.03, -0.32);
@@ -56,6 +76,22 @@ function buildViewModel(def) {
     part(dark, 0.05, 0.05, 0.5, 0, 0.02, -0.35);
     part(dark, 0.04, 0.05, 0.16, 0, 0.06, -0.15);
     part(grip, 0.075, 0.09, 0.2, 0, -0.02, 0.2);
+    // Scope tube with two lens rings, and a long barrel with a muzzle brake.
+    const scope = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.035, 0.22, 12),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0x14181d), roughness: 0.3, metalness: 0.6 }),
+    );
+    scope.rotation.x = Math.PI / 2;
+    scope.position.set(0, 0.1, -0.15);
+    group.add(scope);
+    const lens = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.028, 0.02, 12),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0x2a4a5a), roughness: 0.1, metalness: 0.8, emissive: new THREE.Color(0x0a2530) }),
+    );
+    lens.rotation.x = Math.PI / 2;
+    lens.position.set(0, 0.1, -0.27);
+    group.add(lens);
+    part(dark, 0.02, 0.02, 0.08, 0, 0.02, -0.46);
   } else {
     part(body, 0.09, 0.1, 0.44, 0, 0, -0.12);
     part(dark, 0.045, 0.045, 0.4, 0, 0.025, -0.42);
@@ -87,13 +123,17 @@ export function createWeaponSet(camera, audio) {
   flashLight.position.set(0.22, -0.18, -0.7);
   camera.add(flashLight);
 
-  const owned = { pistol: { mag: 12, reserve: 36 }, rifle: null, shotgun: null, dmr: null };
+  const owned = { pistol: { mag: 12, reserve: 36 }, rifle: null, shotgun: null, dmr: null, knife: { mag: 0, reserve: 0 } };
   let current = 'pistol';
   let cooldown = 0;
   let reloadLeft = 0;
   let flashLeft = 0;
   let kick = 0;
   let bloom = 0;
+  // Deterministic recoil: each weapon walks a fixed pitch/yaw pattern, one
+  // step per shot, looping. No random gaussian — the same burst kicks the
+  // same way every time, so spray can be learned and controlled.
+  const recoilIndex = {};
   models.pistol.visible = true;
 
   function def() { return WEAPONS[current]; }
@@ -107,6 +147,7 @@ export function createWeaponSet(camera, audio) {
     reloadLeft = 0;
     cooldown = 0.1;
     bloom = 0;
+    recoilIndex[id] = 0;
     return true;
   }
 
@@ -145,11 +186,19 @@ export function createWeaponSet(camera, audio) {
       }
     },
     ready() {
+      if (def().kind === 'knife') return cooldown === 0 && reloadLeft === 0;
       return ammo().mag > 0 && cooldown === 0 && reloadLeft === 0;
+    },
+    // Next step of the current weapon's recoil pattern; advances the index.
+    recoilStep() {
+      const pattern = def().recoilPattern || [[def().recoil, 0]];
+      const i = recoilIndex[current] || 0;
+      recoilIndex[current] = (i + 1) % pattern.length;
+      return { pitch: pattern[i][0], yaw: pattern[i][1] };
     },
     pullTrigger() {
       cooldown = def().gap;
-      flashLeft = 0.06;
+      flashLeft = def().kind === 'knife' ? 0 : 0.06;
       kick = 0.05 + def().recoil;
       bloom = Math.min(1, bloom + (def().kind === 'shotgun' ? 0.5 : 0.14));
       audio.shot(def().kind);
@@ -159,12 +208,13 @@ export function createWeaponSet(camera, audio) {
       audio.dryClick();
     },
     takeRound() {
+      if (def().kind === 'knife') return true;
       if (ammo().mag <= 0) return false;
       ammo().mag -= 1;
       return true;
     },
     reload() {
-      if (reloadLeft > 0 || ammo().mag === def().mag || ammo().reserve === 0) return;
+      if (def().kind === 'knife' || reloadLeft > 0 || ammo().mag === def().mag || ammo().reserve === 0) return;
       reloadLeft = def().reload;
       audio.reload();
     },
